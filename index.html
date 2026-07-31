@@ -77,7 +77,7 @@
       uTime:     { value: 0 },
       uRes:      { value: new THREE.Vector2(1, 1) },
       uAspect:   { value: 3 },
-      uAmp:      { value: 2.4 },
+      uAmp:      { value: 4.1 },
       uTheme:    { value: 0 },
       uPadL:     { value: 0 },                        // sidebar-compensatie kleurverloop
       uMouse:    { value: new THREE.Vector2(0.5, 0.5) },
@@ -97,6 +97,16 @@
       // Soft-clip: drukt uitschieters zachtjes samen waar octaven samenvallen,
       // zodat toppen altijd rond blijven i.p.v. een scherpe punt te vormen.
       '  return v / (1.0 + 0.14 * v * v);',
+      '}',
+      // Volume-envelop over de lengte van het lint (Mees, 30 juli 2026: het doek
+      // was overal even dun; het wordt pas mooi als het écht varieert). Twee
+      // golflengtes over elkaar geven brede volle partijen met daartussen stukken
+      // die naar dun uitlopen. p.x drift al met de tijd, dus de envelop reist
+      // vanzelf mee over het lint. Ondergrens 0.22: nergens helemaal plat.
+      'float envf(float x) {',
+      '  float a = 0.5 + 0.5 * sin(x * 0.52 + 1.30);',
+      '  float b = 0.5 + 0.5 * sin(x * 0.23 - 0.60);',
+      '  return 0.22 + 1.05 * a * (0.35 + 0.65 * b);',
       '}'
     ].join('\n');
 
@@ -122,9 +132,11 @@
       '  p.x -= uTime * 0.55;',
       '  vWp = p;',
       '  float e = 0.012;',
-      '  float h0 = fbm(p, uTime);',
-      '  float hx = fbm(p + vec2(e, 0.0), uTime);',
-      '  float hy = fbm(p + vec2(0.0, e), uTime);',
+      // De envelop hoort bij alle drie de monsters, anders kloppen de normalen
+      // (en dus de belichting) niet meer met de werkelijke vorm van het doek.
+      '  float h0 = fbm(p, uTime) * envf(p.x);',
+      '  float hx = fbm(p + vec2(e, 0.0), uTime) * envf(p.x + e);',
+      '  float hy = fbm(p + vec2(0.0, e), uTime) * envf(p.x);',
       '  vH = h0 * 0.62;', // genormaliseerd richting -1..1 voor kleur/schaduw
       // Subtiele muis-bolling: breed en zacht, bewust zonder normal-impact.
       '  float md2 = pow(uv.x - uMouse.x, 2.0) / 0.028 + pow(uv.y - uMouse.y, 2.0) / 0.080;',
@@ -190,9 +202,11 @@
       '  float hh = vH / 0.62;',
       '  vec2 ld = vec2(-0.40, 0.85);',
       '  float occ2 = 0.0;',
-      '  occ2 += max(0.0, fbm(vWp + ld * 0.30, uTime) - hh - 0.22);',
-      '  occ2 += max(0.0, fbm(vWp + ld * 0.60, uTime) - hh - 0.44);',
-      '  occ2 += max(0.0, fbm(vWp + ld * 0.90, uTime) - hh - 0.66);',
+      // Dezelfde envelop als in de vertex-shader, anders werpt het doek schaduw
+      // vanaf een hoogte die het op die plek niet meer heeft.
+      '  occ2 += max(0.0, fbm(vWp + ld * 0.30, uTime) * envf(vWp.x - 0.12) - hh - 0.22);',
+      '  occ2 += max(0.0, fbm(vWp + ld * 0.60, uTime) * envf(vWp.x - 0.24) - hh - 0.44);',
+      '  occ2 += max(0.0, fbm(vWp + ld * 0.90, uTime) * envf(vWp.x - 0.36) - hh - 0.66);',
       '  float selfSh = 1.0 - clamp(occ2 * 0.50, 0.0, 0.42);',
       // Procedurele studio-environment: verticale gradient + twee softboxen,
       // gereflecteerd via fresnel (geen extern HDR-bestand = geen extra faalpunt).
@@ -221,11 +235,13 @@
       '  litDark += mix(warm, vec3(1.0), 0.60) * aniso * 0.60;',
       '  litDark += env * fresE * mix(vec3(1.0), warm, 0.45) * 0.45;',
       '  vec3 col = mix(litLight, litDark, uTheme);',
-      // Dromerige fade aan beide zijkanten (schermruimte) + strakke doekranden met AA.
-      '  float sx = gl_FragCoord.x / uRes.x;',
-      '  float ax = smoothstep(0.0, 0.13, sx) * (1.0 - smoothstep(0.87, 1.0, sx));',
+      // Geen fade meer aan de zijkanten (Mees, 30 juli 2026: het doek werd geblurd
+      // vóórdat het beeld uit was, en dat oogt gek). Het doek is breder dan het
+      // kader en loopt dus scherp door tot het de rand raakt. Alleen de eigen
+      // boven- en onderrand van het lint houden hun anti-aliasing, want dat is de
+      // echte rand van het doek en geen afsnijding.
       '  float ay = smoothstep(0.0, 0.012, vUv.y) * (1.0 - smoothstep(0.988, 1.0, vUv.y));',
-      '  float a = ax * ay;',
+      '  float a = ay;',
       '  gl_FragColor = vec4(col * a, a);', // premultiplied alpha
       '}'
     ].join('\n');
@@ -249,12 +265,16 @@
       var dist = camera.position.length();
       var fh = 2 * Math.tan(camera.fov * Math.PI / 360) * dist;
       var fw = fh * camera.aspect;
-      mesh.scale.set(fw * 1.10, DEPTH, 1);
+      // 1.35 in plaats van 1.10: nu de zijkanten niet meer uitvloeien moet het
+      // doek ruim buiten het kader doorlopen, ook met de z-kanteling van 11°,
+      // anders komt het echte uiteinde van het lint in beeld.
+      mesh.scale.set(fw * 1.35, DEPTH, 1);
       // Ondergrens zodat er op smalle schermen genoeg plooi in beeld blijft.
       uni.uAspect.value = Math.max(mesh.scale.x / mesh.scale.y, 2.2);
-      // Op brede schermen ligt de Fern-sidebar (~380px) over de linkerkant van
-      // het iframe; schuif het kleurverloop op zodat rood zichtbaar blijft.
-      uni.uPadL.value = w >= 1024 ? Math.min(380 / w, 0.35) : 0;
+      // De hero staat sinds 1 augustus 2026 binnen de contentkolom en niet meer
+      // viewport-breed onder de zijbalk door, dus er valt niets te compenseren:
+      // het kleurverloop loopt gewoon van rand tot rand.
+      uni.uPadL.value = 0;
     }
 
     var lastDpr = 0;
