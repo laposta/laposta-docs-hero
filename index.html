@@ -71,13 +71,18 @@
     camera.lookAt(0, 0, 0);
     var scene = new THREE.Scene();
 
-    var DEPTH = 15; // diepte van het doek in wereld-units
+    // Diepte van het doek in wereld-units. Het doek staat bijna op zijn kant
+    // ten opzichte van de camera, dus deze diepte bepaalt hoe dik de band is
+    // waar de golf niets doet. Op 15 was dat ongeveer een tiende van het
+    // beeld en bleef het doek overal dun (Mees, 1 augustus). Een grotere
+    // diepte verlaagt ook uAspect, waardoor de golven breder uitgerekt worden.
+    var DEPTH = 18;
 
     var uni = {
       uTime:     { value: 0 },
       uRes:      { value: new THREE.Vector2(1, 1) },
       uAspect:   { value: 3 },
-      uAmp:      { value: 4.1 },
+      uAmp:      { value: 2.9 },
       uTheme:    { value: 0 },
       uPadL:     { value: 0 },                        // sidebar-compensatie kleurverloop
       uMouse:    { value: new THREE.Vector2(0.5, 0.5) },
@@ -104,9 +109,13 @@
       // die naar dun uitlopen. p.x drift al met de tijd, dus de envelop reist
       // vanzelf mee over het lint. Ondergrens 0.22: nergens helemaal plat.
       'float envf(float x) {',
-      '  float a = 0.5 + 0.5 * sin(x * 0.52 + 1.30);',
-      '  float b = 0.5 + 0.5 * sin(x * 0.23 - 0.60);',
-      '  return 0.22 + 1.05 * a * (0.35 + 0.65 * b);',
+      '  float a = 0.5 + 0.5 * sin(x * 0.38 + 1.30);',
+      '  float b = 0.5 + 0.5 * sin(x * 0.17 - 0.60);',
+      '  float e = mix(a, b, 0.45);',
+      // smoothstep in plaats van een rechte sinus: het doek blijft langer vol
+      // en langer dun, met een korte overgang ertussen. Een kale sinus geeft
+      // overal een beetje verschil en nergens echt.
+      '  return 0.12 + 1.32 * smoothstep(0.08, 0.88, e);',
       '}'
     ].join('\n');
 
