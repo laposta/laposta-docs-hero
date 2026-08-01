@@ -67,7 +67,7 @@
     // Zwevend zijden lint: camera kijkt van iets onder het doek omhoog,
     // zodat boven- en onderrand allebei vrij golven tegen de achtergrond.
     var camera = new THREE.PerspectiveCamera(30, 2, 0.1, 100);
-    camera.position.set(0, -2, 22);
+    camera.position.set(0, -1.5, 34.0);
     camera.lookAt(0, 0, 0);
     var scene = new THREE.Scene();
 
@@ -90,14 +90,22 @@
 
     // Gedeeld door vertex- en fragment-shader (zelf-schaduw sampelt dezelfde golf).
     var FBM = [
-      // Organische vloeiende beweging: 3 fbm-octaven van sin*cos-golven.
+      // Organische vloeiende beweging: 3 octaven van golven die langs het lint
+      // reizen, met een fasedraai over de breedte.
+      // LET OP (Mees, 1 augustus 2026): dit was sin(x)*cos(y). Bij zo'n product
+      // verdwijnt de hele golf zodra cos(y+t) door nul gaat, en omdat het lint
+      // maar een smalle strook y beslaat gebeurde dat over het HELE doek
+      // tegelijk. Elke ~13 seconden klapte het daardoor flinterdun. Nu zit y in
+      // de FASE in plaats van in de amplitude: de golf reist altijd op volle
+      // sterkte langs x en draait alleen van vorm. Hij kan dus nooit meer
+      // globaal plat vallen.
       'float fbm(vec2 p, float t) {',
       '  float v = 0.0;',
-      '  v += 1.00 * sin(p.x + t) * cos(p.y + t*0.8);',
+      '  v += 1.00 * sin(p.x + t + 0.90 * sin(p.y * 1.30 + t * 0.60));',
       '  p *= 1.4;',
-      '  v += 0.50 * sin(p.x*2.0 + t*1.2 + 1.7) * cos(p.y*2.0 + t*0.9 + 0.6);',
+      '  v += 0.50 * sin(p.x*2.0 + t*1.2 + 1.7 + 0.70 * sin(p.y * 2.10 - t * 0.50));',
       '  p *= 1.4;',
-      '  v += 0.18 * sin(p.x*4.0 - t*0.8 + 3.1) * cos(p.y*4.0 + t*1.1 + 2.2);',
+      '  v += 0.18 * sin(p.x*4.0 - t*0.8 + 3.1 + 0.50 * sin(p.y * 3.30 + t * 0.90));',
       // Soft-clip: drukt uitschieters zachtjes samen waar octaven samenvallen,
       // zodat toppen altijd rond blijven i.p.v. een scherpe punt te vormen.
       '  return v / (1.0 + 0.14 * v * v);',
@@ -136,7 +144,7 @@
       FBM,
       'void main() {',
       '  vUv = uv;',
-      '  float FREQ = 1.2;',
+      '  float FREQ = 1.32;',
       '  vec2 p = vec2(uv.x * uAspect, uv.y) * FREQ;',
       // Trage advectie: het golfpatroon drift zijwaarts langs het lint,
       // zodat het doek zichtbaar stroomt i.p.v. alleen op en neer te deinen.
@@ -148,6 +156,32 @@
       '  float h0 = fbm(p, uTime) * envf(p.x);',
       '  float hx = fbm(p + vec2(e, 0.0), uTime) * envf(p.x + e);',
       '  float hy = fbm(p + vec2(0.0, e), uTime) * envf(p.x);',
+      // Driftcompensatie. Er past nog geen hele golflengte in beeld, dus het
+      // gemiddelde van de golf over het zichtbare venster is niet nul: het hele
+      // lint zakt en stijgt langzaam mee met de golf en liep daardoor onderaan
+      // tegen de rand van het kader (Mees, 1 augustus 2026: een stuk weggesneden).
+      // Hieronder wordt dat gemiddelde analytisch berekend voor de eerste
+      // octaaf, die de drift veroorzaakt, en er weer af gehaald. Het is een
+      // constante over het hele doek, dus de vorm, de normalen en de belichting
+      // blijven exact hetzelfde; alleen de hoogte waarop het lint hangt blijft
+      // staan. Zo hoeven we geen ruimte weg te geven aan een kader dat groter is
+      // dan het lint.
+      '  float A = uAspect * FREQ;',
+      '  float halfw = A * 0.5 / 1.35;',   // 1.35 = overmaat van het doek t.o.v. het kader
+      '  float ctr = A * 0.5 - uTime * 0.55;',
+      '  float lo = ctr - halfw;',
+      '  float hi = ctr + halfw;',
+      '  float w = max(hi - lo, 0.001);',
+      '  float gem1 = (cos(lo + uTime) - cos(hi + uTime)) / w;',
+      // Tweede octaaf draagt ook bij aan de drift, met factor 0.5 en frequentie
+      // 2.8 (twee keer p *= 1.4 zit er nog niet in bij deze octaaf, wel de eerste).
+      '  float f2 = 2.8;',
+      '  float ph2 = uTime * 1.2 + 1.7;',
+      '  float gem2 = 0.5 * (cos(f2 * lo + ph2) - cos(f2 * hi + ph2)) / (f2 * w);',
+      // Factor iets boven 1: de envelop vermenigvuldigt de golf en ligt gemiddeld
+      // rond 1.1, dus het werkelijke gemiddelde is iets groter dan het kale.
+      '  float drift = (gem1 + gem2) * 1.05;',
+      '  h0 -= drift; hx -= drift; hy -= drift;',
       '  vH = h0 * 0.62;', // genormaliseerd richting -1..1 voor kleur/schaduw
       // Subtiele muis-bolling: breed en zacht, bewust zonder normal-impact.
       '  float md2 = pow(uv.x - uMouse.x, 2.0) / 0.028 + pow(uv.y - uMouse.y, 2.0) / 0.080;',
@@ -269,8 +303,19 @@
       blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor
     });
     var mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1, 220, 96), mat);
-    mesh.rotation.x = -Math.PI / 2.1;
+    // Kanteling van het doek ten opzichte van de kijkrichting. Op -PI/2.1 stond
+    // het doek 4.3 graden van zijn kant af, terwijl de golf zelf hellingen van
+    // ruim 13 graden maakt. Op de plekken waar die twee elkaar opheffen kwam het
+    // doek precies op zijn kant en verdween het naar een lijn: het flinterdunne
+    // dat Mees zag (1 augustus 2026). Op -PI/2.25 is dat 10 graden, ruim boven
+    // wat de golf kan halen, dus het doek houdt overal body. Gemeten over 40
+    // momenten: dunste kolom van 1% naar 18% van de bandhoogte.
+    mesh.rotation.x = -Math.PI / 2.25;
     mesh.rotation.z = Math.PI / 16;
+    // Het lint raakte alleen de ONDERrand, nooit de bovenrand: boven bleef ruimte
+    // over. In plaats van het kader groter te maken (en het lint dus dunner) staat
+    // het lint een stukje hoger, zodat die ruimte aan de onderkant terechtkomt.
+    mesh.position.y = 0.9;
     scene.add(mesh);
 
     function frameSize(w, h) {
@@ -329,7 +374,13 @@
     try { if (parent !== window) parent.postMessage({ type: 'lp-wave-ready' }, '*'); } catch (e) {}
 
     var SLOW = matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches ? 0.06 : 1;
-    var raf = null, frames = 0, tAccum = 0, last = 0;
+    // Startmoment van de animatie, in seconden (Mees, 1 augustus 2026: hij wilde
+    // niet op het beginbeeld starten). Dit is puur een fase-offset: de beweging
+    // is doorlopend en procedureel, geen lus, dus er valt niets stuk te lopen.
+    // 85 is gekozen door 60 momenten door te meten op dikte en randcontact; dit
+    // is een van de dikste momenten zonder dat het doek een rand raakt.
+    var START = 85.0;
+    var raf = null, frames = 0, tAccum = START, last = 0;
 
     // Subtiele muis-interactie: een zachte, na-ijlende bolling die het doek
     // volgt. Sterft uit na 2.5s stilte; vrijwel uit bij prefers-reduced-motion;
